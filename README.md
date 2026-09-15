@@ -1,6 +1,6 @@
-# Nuqta
+# Nuqta Intelligence
 
-Nuqta is a cockpit for running several companies at once. The four businesses
+Nuqta Intelligence is a cockpit for running several companies at once. The four businesses
 are districts in a small Los Angeles basin, and every project you have running
 with Claude — in a chat or in a Claude Code session — is a worker standing at
 the company it belongs to. Walking means it is moving. Standing still and
@@ -122,4 +122,4 @@ the Claude Code side syncs itself.
 ## Name
 
 *Nuqta* is the dot. The brass nuqta at the centre of the Anwar mark is where the
-name came from. The company is Nuqta Intelligence LLC.
+name came from, and Nuqta Intelligence LLC is the entity it belongs to.
