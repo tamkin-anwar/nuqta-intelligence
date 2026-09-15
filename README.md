@@ -14,6 +14,8 @@ to find out.
 
 Built by Anwar Creative Studio.
 
+**[Live demo →](https://tamkin-anwar.github.io/nuqta-intelligence/nuqta.html)** — opened outside Claude, the world renders but the board stays empty. See [How it works](#how-it-works) below for why.
+
 ## What it does
 
 - **One worker per thread.** Every active project stands on its company's lot
