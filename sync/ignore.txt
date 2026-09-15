@@ -1,0 +1,11 @@
+# One substring per line. Any project whose path or name contains it is skipped.
+# Scrapped projects keep their session history on disk forever, so list them
+# here or the nightly sync brings them back.
+
+# scrapped
+Anwar Creative Studio/Gaffer
+Anwar Creative Studio/Greenware
+Anwar Creative Studio/Ritu
+
+# same repo as artha — "artha-dashboard" is only the Render hostname
+tamkin-anwar-projects/artha-dashboard
