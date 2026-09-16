@@ -572,16 +572,16 @@
   }
   var doneMap = {};            // milestoneId -> timestamp
   var msRef = null, worksCol = null;   // the db handle is frozen; keep refs beside it
-  var activeId = null, needsOnly = false, execOn = false, filterMode = 'work';
+  var activeId = null, execOn = false, filterMode = 'work';
   var archOpen = {};   // groupId -> archive expanded
   var db = null;
 
   // Per-company agent chat. sample() runs on the viewer's own Claude usage,
-  // so this costs nothing beyond what they already pay for. Transcripts try
-  // to live under this viewer's private data/users/<id> subtree (each org
-  // member gets their own thread with no accounts system); if the viewer id
-  // is unavailable the same collection shape is used at a shared path
-  // instead, so nothing has to change later if that becomes available.
+  // so this costs nothing beyond what's already paid for. A per-viewer
+  // private thread was tried via a `user` capability the db docs describe,
+  // but the platform confirmed (checked live, both current contracts) that
+  // capability doesn't exist — so this is one shared conversation per
+  // company, same as the rest of the board.
   var sample = null, agentReady = false, agentBusy = false;
   var activeAgent = null;
   var agentMsgs = {};      // districtId -> [{role:'user'|'agent', text, pending?, error?}]
@@ -590,7 +590,6 @@
 
   function daysBetween(a,b){ return Math.ceil((b-a)/86400000); }
   function daysAgo(ts){ return Math.floor((Date.now()-ts)/86400000); }
-  function fmtDays(n){ return n < 0 ? 'passed' : n + (n===1?' day':' days'); }
 
   /* ==================== signals ==================== */
   // A signal is one line in the panel: a live deal, or a milestone.
@@ -972,36 +971,6 @@
     draw(c.getContext('2d'),w,h);
     var t=new THREE.CanvasTexture(c); t.needsUpdate=true; return t;
   }
-  // A signboard rather than a floating abbreviation: dark plate, accent
-  // edge, full company name. Kept as a sprite so it stays readable from
-  // every camera angle instead of going edge-on.
-  function signboard(name, css, widthWorld){
-    var W = 1024, H = 236;
-    var tex = canvasTex(function(ctx,w,h){
-      ctx.clearRect(0,0,w,h);
-      var r = 16, pad = 4;
-      ctx.beginPath();
-      ctx.moveTo(pad+r,pad); ctx.lineTo(w-pad-r,pad);
-      ctx.quadraticCurveTo(w-pad,pad,w-pad,pad+r);
-      ctx.lineTo(w-pad,h-pad-r); ctx.quadraticCurveTo(w-pad,h-pad,w-pad-r,h-pad);
-      ctx.lineTo(pad+r,h-pad); ctx.quadraticCurveTo(pad,h-pad,pad,h-pad-r);
-      ctx.lineTo(pad,pad+r); ctx.quadraticCurveTo(pad,pad,pad+r,pad);
-      ctx.closePath();
-      ctx.fillStyle = 'rgba(10,16,27,.94)'; ctx.fill();
-      ctx.lineWidth = 3; ctx.strokeStyle = css; ctx.globalAlpha = .6; ctx.stroke(); ctx.globalAlpha = 1;
-      ctx.fillStyle = css; ctx.fillRect(pad, h*0.3, 9, h*0.4);
-      ctx.fillRect(w-pad-9, h*0.3, 9, h*0.4);
-      ctx.font = '800 78px "Big Shoulders Display", sans-serif';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillStyle = '#f0e9d9';
-      ctx.fillText(name.toUpperCase(), w/2, h/2 + 5);
-    }, W, H);
-    var s = new THREE.Sprite(new THREE.SpriteMaterial({map:tex, transparent:true, depthWrite:false}));
-    var ww = widthWorld || 12;
-    s.scale.set(ww, ww*H/W, 1);
-    return s;
-  }
-
   /* ---------- the basin ---------- */
 
   // The land stops at the coast so the Pacific is actually water, not
@@ -1479,29 +1448,6 @@
 
   /* ---------- one figure per active district ---------- */
 
-  function badge(){
-    var c=document.createElement('canvas'); c.width=128; c.height=128;
-    var tex=new THREE.CanvasTexture(c);
-    var s=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,transparent:true,depthWrite:false}));
-    s.scale.set(0.85,0.85,1); s.visible=false;
-    s.userData={ctx:c.getContext('2d'),c:c,tex:tex};
-    return s;
-  }
-  function setBadge(s,sym,col){
-    if(!s) return;
-    if(!sym){ s.visible=false; return; }
-    if(s.userData.sym===sym){ s.visible=true; return; }
-    s.userData.sym=sym; s.visible=true;
-    var ctx=s.userData.ctx, c=s.userData.c;
-    ctx.clearRect(0,0,c.width,c.height);
-    ctx.beginPath(); ctx.arc(64,64,54,0,Math.PI*2);
-    ctx.fillStyle='rgba(11,17,29,.92)'; ctx.fill();
-    ctx.lineWidth=6; ctx.strokeStyle=col; ctx.stroke();
-    ctx.font='800 62px "Big Shoulders Display", sans-serif';
-    ctx.fillStyle=col; ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText(sym,64,68);
-    s.userData.tex.needsUpdate=true;
-  }
   // Name plate that floats over a worker's head.
   function plate(text, col){
     var c = document.createElement('canvas'); c.width = 512; c.height = 128;
@@ -2598,38 +2544,20 @@
     }).catch(function(){ agentReady = false; if (activeAgent) renderAgentPanel(); });
   }
 
-  // `user` is not in the platform's documented capability list, but the db
-  // capability's own docs describe declaring it to read Claude.user.id for a
-  // per-viewer private path. Treat it as possibly-unavailable either way:
-  // claude.use() of an unknown name resolves null rather than throwing, so
-  // this degrades to the shared fallback below with no special-casing.
-  function resolveViewerId(cb){
-    if (typeof claude === 'undefined' || !claude.use) { cb(null); return; }
-    claude.use('user').then(function(u){
-      if (!u || typeof u.id !== 'function') { cb(null); return; }
-      u.id().then(function(id){ cb(id || null); }).catch(function(){ cb(null); });
-    }).catch(function(){ cb(null); });
-  }
-
   function initAgentStore(distId){
     if (!db) return;   // db capability unavailable entirely for this view
-    resolveViewerId(function(uid){
-      var col;
-      try {
-        col = uid
-          ? db.doc('data/users/' + uid + '/agent_' + distId).collection('messages')
-          : db.collection('agent_' + distId + '_messages');   // shared fallback, same shape
-      } catch (e) { col = null; }
-      if (!col) return;
-      agentCols[distId] = col;
-      col.orderBy('at', 'asc').limit(200).get().then(function(snap){
-        var loaded = (snap.docs || []).map(function(doc){
-          var v = doc.data() || {}; return {role: v.role, text: v.text};
-        });
-        if (loaded.length) agentMsgs[distId] = loaded;
-        if (activeAgent === distId) renderAgentPanel();
-      }).catch(function(){});
-    });
+    var col;
+    try { col = db.collection('agent_' + distId + '_messages'); }
+    catch (e) { col = null; }
+    if (!col) return;
+    agentCols[distId] = col;
+    col.orderBy('at', 'asc').limit(200).get().then(function(snap){
+      var loaded = (snap.docs || []).map(function(doc){
+        var v = doc.data() || {}; return {role: v.role, text: v.text};
+      });
+      if (loaded.length) agentMsgs[distId] = loaded;
+      if (activeAgent === distId) renderAgentPanel();
+    }).catch(function(){});
   }
 
   function persistAgentMsg(distId, role, text){
@@ -2682,6 +2610,48 @@
     apSend.disabled = !agentReady || agentBusy;
   }
 
+  // Tools let the agent act on the board, not just describe it — "mark
+  // Doorsong shipped" actually calls setWorkStatus. Scoped to this
+  // district's own workstreams (checked in execute, not just trusted from
+  // the model) so a company's agent can't touch another company's data.
+  function buildAgentTools(distId){
+    function findWork(id){
+      return works.filter(function(w){ return w.id === id && w.co === distId; })[0];
+    }
+    return [
+      {
+        name: 'set_workstream_status',
+        description: 'Change a workstream\'s status for this company. Valid statuses: ' +
+          WORK_ORDER.join(', ') + '. Returns the updated workstream.',
+        inputSchema: {type:'object', properties:{
+          workId: {type:'string', description:'The workstream id, as listed in the board context.'},
+          status: {type:'string', enum: WORK_ORDER}
+        }, required:['workId','status']},
+        execute: function(input){
+          var w = findWork(String(input.workId||''));
+          if (!w) throw new Error('No workstream with that id for this company.');
+          var status = String(input.status||'');
+          if (!WORK_STATUS[status]) throw new Error('Unknown status: ' + status);
+          setWorkStatus(w.id, status);
+          return {id: w.id, name: w.name, status: status};
+        }
+      },
+      {
+        name: 'touch_workstream',
+        description: 'Mark a workstream as touched today, clearing any "gone quiet" warning.',
+        inputSchema: {type:'object', properties:{
+          workId: {type:'string', description:'The workstream id, as listed in the board context.'}
+        }, required:['workId']},
+        execute: function(input){
+          var w = findWork(String(input.workId||''));
+          if (!w) throw new Error('No workstream with that id for this company.');
+          touchWork(w.id);
+          return {id: w.id, name: w.name, touched: 'today'};
+        }
+      }
+    ];
+  }
+
   function sendAgentMessage(distId, text){
     if (!sample || agentBusy || !text) return;
     agentBusy = true;
@@ -2697,12 +2667,15 @@
     // separate leading turn — sample() turns should alternate user/assistant
     // the way the conversation actually happened, so the context rides
     // along with the real message instead of breaking that alternation.
+    // Ids are included (not just names) so the model can address a specific
+    // workstream when it calls a tool.
     var contextLines = works.filter(function(w){ return w.co === distId; })
-      .map(function(w){ return '- ' + w.name + ' (' + ((WORK_STATUS[w.status]||{}).label||w.status) + ')'; });
+      .map(function(w){ return '- ' + w.id + ': ' + w.name + ' (' + ((WORK_STATUS[w.status]||{}).label||w.status) + ')'; });
     var context = 'You are the assistant embedded in the Nuqta Intelligence dashboard for ' +
-      d.name + '. Current open workstreams for this company:\n' +
+      d.name + '. Current open workstreams for this company (id: name (status)):\n' +
       (contextLines.length ? contextLines.join('\n') : '(none tracked)') +
-      '\n\nAnswer directly and concisely.\n\n';
+      '\n\nYou can change a workstream\'s status or mark it touched using the tools ' +
+      'provided, or just answer directly. Be concise.\n\n';
 
     var turns = list.filter(function(m){ return !m.pending; }).map(function(m, i, arr){
       var isLastUser = (m.role === 'user' && i === arr.length - 1);
@@ -2712,6 +2685,7 @@
     sample(turns, {
       modelTier: 'default',
       cache: false,
+      tools: buildAgentTools(distId),
       onText: function(ev){ list[pendingIdx].text = ev.text; renderAgentPanel(); }
     }).then(function(res){
       list[pendingIdx] = {role: 'agent', text: res.text};
@@ -2722,6 +2696,7 @@
       var code = e && e.code;
       var msg = code === 'not_granted' ? 'Agent access was not granted for this view.'
               : code === 'rate_limited' ? 'Rate limited — try again in a moment.'
+              : code === 'tools_unavailable' ? 'This view can\'t run board actions — try asking without one.'
               : (e && e.message) || 'The agent could not answer.';
       list[pendingIdx] = {role: 'agent', text: '', error: msg};
       agentBusy = false;
@@ -2748,7 +2723,6 @@
   document.getElementById('fWork').onclick  = function(){ setFilter('work'); };
   function setFilter(mode){
     filterMode = mode;
-    needsOnly = (mode === 'needs');
     document.getElementById('fAll').classList.toggle('on', mode==='all');
     document.getElementById('fNeeds').classList.toggle('on', mode==='needs');
     document.getElementById('fWork').classList.toggle('on', mode==='work');
