@@ -40,8 +40,11 @@
   #hud.ready .p2{transition-delay:.08s;}
   #hud.ready .p3{transition-delay:.16s;}
   .glass{
-    background:linear-gradient(180deg,rgba(18,26,42,.88),rgba(11,17,29,.78));
-    border:1px solid var(--line);border-radius:2px;backdrop-filter:blur(8px);
+    background:linear-gradient(180deg,rgba(20,29,46,.90),rgba(10,15,26,.82));
+    border:1px solid var(--line);border-radius:3px;backdrop-filter:blur(14px) saturate(1.15);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.05),
+               0 18px 50px -22px rgba(0,0,0,.65),
+               0 0 42px -14px var(--glow, transparent);
   }
   .row-top{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;}
   .row-bottom{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;}
@@ -277,6 +280,44 @@
   .ftnote{flex:1;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:9.5px;
     letter-spacing:.08em;text-transform:uppercase;color:var(--text-faint);padding:11px 0;}
 
+  .grp-head .talk{flex:none;width:20px;height:20px;border:1px solid var(--line);border-radius:2px;
+    background:transparent;color:var(--text-faint);cursor:pointer;font-size:10px;
+    display:flex;align-items:center;justify-content:center;transition:color .15s ease,border-color .15s ease;}
+  .grp-head .talk:hover{color:var(--sand);border-color:rgba(226,211,180,.4);}
+
+  /* agent panel — a per-company chat, modeled on the drawer but wider so a
+     conversation has room to breathe */
+  #ap{position:fixed;inset:0;z-index:16;display:flex;justify-content:flex-end;pointer-events:none;}
+  #ap.open{pointer-events:auto;}
+  #apScrim{position:absolute;inset:0;background:rgba(5,8,14,0);transition:background .25s ease;}
+  #ap.open #apScrim{background:rgba(5,8,14,.5);}
+  #agentPanel{
+    position:relative;width:440px;max-width:92vw;height:100%;--glow:rgba(166,134,224,.38);
+    background:linear-gradient(180deg,#141b2c,#0c121f);border-left:1px solid var(--line);
+    transform:translateX(100%);transition:transform .32s cubic-bezier(.22,.9,.3,1);
+    display:flex;flex-direction:column;
+    box-shadow:0 0 70px -20px var(--glow), inset 1px 0 0 rgba(255,255,255,.04);
+  }
+  #ap.open #agentPanel{transform:translateX(0);}
+  #agentPanel .bd{flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:10px;}
+  .msg{max-width:82%;padding:10px 13px;border-radius:10px;font-size:13.5px;line-height:1.55;
+    white-space:pre-wrap;word-break:break-word;}
+  .msg.user{align-self:flex-end;color:var(--text);border-bottom-right-radius:3px;
+    background:linear-gradient(180deg,#3c4c6a,#2b3a54);}
+  .msg.agent{align-self:flex-start;color:var(--text);border-bottom-left-radius:3px;
+    background:rgba(166,134,224,.10);border:1px solid rgba(166,134,224,.25);}
+  .msg.agent.err{background:rgba(224,104,79,.10);border-color:rgba(224,104,79,.35);
+    color:var(--text-dim);font-size:12.5px;}
+  .msg .cursor{opacity:.6;animation:blink 1s step-start infinite;}
+  @keyframes blink{50%{opacity:0;}}
+  .ap-input{display:flex;gap:8px;align-items:flex-end;padding:14px 18px;border-top:1px solid var(--line);}
+  .ap-input textarea{flex:1;resize:none;max-height:120px;background:var(--ink-3);color:var(--text);
+    border:1px solid var(--line);border-radius:3px;padding:9px 11px;font:inherit;font-size:13px;
+    line-height:1.4;outline:none;transition:border-color .15s ease;}
+  .ap-input textarea:focus{border-color:rgba(166,134,224,.5);}
+  .ap-input .btn{flex:none;width:74px;}
+  .ap-input .btn:disabled{opacity:.4;cursor:default;filter:none;}
+
   /* exec */
   #execLayer{position:fixed;inset:0;z-index:12;pointer-events:none;opacity:0;
     transition:opacity .35s ease;}
@@ -413,6 +454,23 @@
   </div>
 </div>
 
+<div id="ap">
+  <div id="apScrim"></div>
+  <div id="agentPanel">
+    <button class="close" id="apClose">&times;</button>
+    <div class="hd">
+      <div class="eyebrow" id="apEye">—</div>
+      <h3 id="apTitle">—</h3>
+      <div class="sub">Agent</div>
+    </div>
+    <div class="bd" id="apMsgs"></div>
+    <div class="ap-input">
+      <textarea id="apText" rows="1" placeholder="Ask about this company…"></textarea>
+      <button class="btn pri" id="apSend">Send</button>
+    </div>
+  </div>
+</div>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 (function(){
@@ -517,6 +575,18 @@
   var activeId = null, needsOnly = false, execOn = false, filterMode = 'work';
   var archOpen = {};   // groupId -> archive expanded
   var db = null;
+
+  // Per-company agent chat. sample() runs on the viewer's own Claude usage,
+  // so this costs nothing beyond what they already pay for. Transcripts try
+  // to live under this viewer's private data/users/<id> subtree (each org
+  // member gets their own thread with no accounts system); if the viewer id
+  // is unavailable the same collection shape is used at a shared path
+  // instead, so nothing has to change later if that becomes available.
+  var sample = null, agentReady = false, agentBusy = false;
+  var activeAgent = null;
+  var agentMsgs = {};      // districtId -> [{role:'user'|'agent', text, pending?, error?}]
+  var agentCols = {};      // districtId -> db collection ref, once resolved
+  var agentStoreInit = {}; // districtId -> true once initAgentStore has run
 
   function daysBetween(a,b){ return Math.ceil((b-a)/86400000); }
   function daysAgo(ts){ return Math.floor((Date.now()-ts)/86400000); }
@@ -2280,6 +2350,7 @@
                 '<span class="tag">'+d.tag+'</span>'+
                 '<span class="nm">'+d.name+'</span>'+
                 '<span class="src '+d.feed+'">'+(d.feed==='live'?'Live':d.feed==='dormant'?'Dormant':'Tracked')+'</span>'+
+                (d.id==='acs' ? '<button class="talk" data-agent="'+d.id+'" title="Talk to '+esc(d.name)+'">&#9998;</button>' : '')+
               '</div>';
       // Finished and parked work folds away, otherwise the board silts up and
       // stops being something you can read at a glance.
@@ -2340,6 +2411,12 @@
       g.addEventListener('click', function(){
         var dd = district(g.getAttribute('data-focus'));
         if (dd) focusDistrict(dd);   // Anwar Ventures is a group, not a place on the map
+      });
+    });
+    Array.prototype.forEach.call(listEl.querySelectorAll('.talk'), function(t){
+      t.addEventListener('click', function(ev){
+        ev.stopPropagation();   // don't also pan the camera via the group-head handler above
+        openAgent(t.getAttribute('data-agent'));
       });
     });
   }
@@ -2510,6 +2587,160 @@
     }
   }
 
+  /* ---------- agent chat ---------- */
+
+  function initAgent(){
+    if (typeof claude === 'undefined' || !claude.use) return;
+    claude.use('sample').then(function(s){
+      sample = s;
+      agentReady = !!s;
+      if (activeAgent) renderAgentPanel();
+    }).catch(function(){ agentReady = false; if (activeAgent) renderAgentPanel(); });
+  }
+
+  // `user` is not in the platform's documented capability list, but the db
+  // capability's own docs describe declaring it to read Claude.user.id for a
+  // per-viewer private path. Treat it as possibly-unavailable either way:
+  // claude.use() of an unknown name resolves null rather than throwing, so
+  // this degrades to the shared fallback below with no special-casing.
+  function resolveViewerId(cb){
+    if (typeof claude === 'undefined' || !claude.use) { cb(null); return; }
+    claude.use('user').then(function(u){
+      if (!u || typeof u.id !== 'function') { cb(null); return; }
+      u.id().then(function(id){ cb(id || null); }).catch(function(){ cb(null); });
+    }).catch(function(){ cb(null); });
+  }
+
+  function initAgentStore(distId){
+    if (!db) return;   // db capability unavailable entirely for this view
+    resolveViewerId(function(uid){
+      var col;
+      try {
+        col = uid
+          ? db.doc('data/users/' + uid + '/agent_' + distId).collection('messages')
+          : db.collection('agent_' + distId + '_messages');   // shared fallback, same shape
+      } catch (e) { col = null; }
+      if (!col) return;
+      agentCols[distId] = col;
+      col.orderBy('at', 'asc').limit(200).get().then(function(snap){
+        var loaded = (snap.docs || []).map(function(doc){
+          var v = doc.data() || {}; return {role: v.role, text: v.text};
+        });
+        if (loaded.length) agentMsgs[distId] = loaded;
+        if (activeAgent === distId) renderAgentPanel();
+      }).catch(function(){});
+    });
+  }
+
+  function persistAgentMsg(distId, role, text){
+    var col = agentCols[distId];
+    if (!col) return;
+    // No pruning yet — fine for daily personal use, but an artifact database
+    // caps at 5,000 documents total, so this will need rotation eventually.
+    col.add({role: role, text: text, at: Date.now()}).catch(function(){});
+  }
+
+  var ap = document.getElementById('ap');
+  var apMsgs = document.getElementById('apMsgs');
+  var apText = document.getElementById('apText');
+  var apSend = document.getElementById('apSend');
+
+  function openAgent(distId){
+    activeAgent = distId;
+    if (!agentMsgs[distId]) agentMsgs[distId] = [];
+    renderAgentPanel();
+    ap.classList.add('open');
+    if (!agentStoreInit[distId]) { agentStoreInit[distId] = true; initAgentStore(distId); }
+  }
+  function closeAgent(){ activeAgent = null; ap.classList.remove('open'); }
+  document.getElementById('apClose').onclick = closeAgent;
+  document.getElementById('apScrim').onclick = closeAgent;
+
+  function renderAgentPanel(){
+    if (!activeAgent) return;
+    var d = district(activeAgent);
+    var eye = document.getElementById('apEye');
+    eye.textContent = d.name + ' · Agent';
+    eye.style.color = d.css;
+    document.getElementById('apTitle').textContent = d.name;
+
+    var list = agentMsgs[activeAgent] || [];
+    var html = '';
+    if (!agentReady){
+      html = '<div class="mnote" style="padding:16px 0;">Agent unavailable here — open this page inside Claude to talk to ' + esc(d.name) + '.</div>';
+    } else if (!list.length){
+      html = '<div class="mnote" style="padding:16px 0;">Ask anything about ' + esc(d.name) + ' — open workstreams, next steps, anything on the board.</div>';
+    } else {
+      list.forEach(function(m){
+        if (m.error) html += '<div class="msg agent err">' + esc(m.error) + '</div>';
+        else html += '<div class="msg ' + (m.role === 'user' ? 'user' : 'agent') + '">' +
+                     esc(m.text) + (m.pending ? '<span class="cursor">▍</span>' : '') + '</div>';
+      });
+    }
+    apMsgs.innerHTML = html;
+    apMsgs.scrollTop = apMsgs.scrollHeight;
+    apSend.disabled = !agentReady || agentBusy;
+  }
+
+  function sendAgentMessage(distId, text){
+    if (!sample || agentBusy || !text) return;
+    agentBusy = true;
+    var d = district(distId);
+    var list = agentMsgs[distId] || (agentMsgs[distId] = []);
+    list.push({role: 'user', text: text});
+    persistAgentMsg(distId, 'user', text);
+    var pendingIdx = list.length;
+    list.push({role: 'agent', text: '', pending: true});
+    renderAgentPanel();
+
+    // Fresh company context goes on the latest user turn only, not as a
+    // separate leading turn — sample() turns should alternate user/assistant
+    // the way the conversation actually happened, so the context rides
+    // along with the real message instead of breaking that alternation.
+    var contextLines = works.filter(function(w){ return w.co === distId; })
+      .map(function(w){ return '- ' + w.name + ' (' + ((WORK_STATUS[w.status]||{}).label||w.status) + ')'; });
+    var context = 'You are the assistant embedded in the Nuqta Intelligence dashboard for ' +
+      d.name + '. Current open workstreams for this company:\n' +
+      (contextLines.length ? contextLines.join('\n') : '(none tracked)') +
+      '\n\nAnswer directly and concisely.\n\n';
+
+    var turns = list.filter(function(m){ return !m.pending; }).map(function(m, i, arr){
+      var isLastUser = (m.role === 'user' && i === arr.length - 1);
+      return {role: m.role === 'agent' ? 'assistant' : 'user', content: isLastUser ? context + m.text : m.text};
+    });
+
+    sample(turns, {
+      modelTier: 'default',
+      cache: false,
+      onText: function(ev){ list[pendingIdx].text = ev.text; renderAgentPanel(); }
+    }).then(function(res){
+      list[pendingIdx] = {role: 'agent', text: res.text};
+      agentBusy = false;
+      renderAgentPanel();
+      persistAgentMsg(distId, 'agent', res.text);
+    }).catch(function(e){
+      var code = e && e.code;
+      var msg = code === 'not_granted' ? 'Agent access was not granted for this view.'
+              : code === 'rate_limited' ? 'Rate limited — try again in a moment.'
+              : (e && e.message) || 'The agent could not answer.';
+      list[pendingIdx] = {role: 'agent', text: '', error: msg};
+      agentBusy = false;
+      renderAgentPanel();
+    });
+  }
+
+  function doSendAgent(){
+    if (!agentReady || agentBusy) return;   // matches apSend's own disabled condition
+    var v = apText.value.trim();
+    if (!v || !activeAgent) return;
+    apText.value = '';
+    sendAgentMessage(activeAgent, v);
+  }
+  apSend.onclick = doSendAgent;
+  apText.addEventListener('keydown', function(ev){
+    if (ev.key === 'Enter' && !ev.shiftKey){ ev.preventDefault(); doSendAgent(); }
+  });
+
   /* ---------- filters, exec ---------- */
 
   document.getElementById('fAll').onclick   = function(){ setFilter('all'); };
@@ -2591,6 +2822,7 @@
   renderDealPillars();
   renderWorkers();
   initDb();
+  initAgent();
   startFeed();
   startMailFeed();
   setInterval(renderClocks, 60000);
