@@ -2,30 +2,6 @@
 
   /* ==================== HubSpot feed ==================== */
 
-  function parseDeals(payload){
-    var p = payload;
-    if (typeof p === 'string'){ try { p = JSON.parse(p); } catch(e){ return null; } }
-    if (!p) return null;
-    var rows = p.results || p.items || (Array.isArray(p) ? p : null);
-    if (!rows) return null;
-    var tpl = p.urlTemplate || '';
-    return rows.map(function(r){
-      var pr = r.properties || r;
-      var mod = Date.parse(pr.hs_lastmodifieddate || pr.createdate || '') || Date.now();
-      return {
-        id: r.id || pr.hs_object_id,
-        name: pr.dealname || r.displayName || 'Untitled deal',
-        stage: pr.dealstage || '',
-        amount: pr.amount ? Number(pr.amount) : null,
-        currency: pr.deal_currency_code || 'USD',
-        closedate: pr.closedate || null,
-        created: Date.parse(pr.createdate||'') || null,
-        modified: mod,
-        url: tpl ? tpl.replace('{id}', r.id || pr.hs_object_id) : null
-      };
-    });
-  }
-
   var FEED_COPY = {
     needs_reauth:        {t:'HubSpot needs reconnecting', b:'Reconnect HubSpot in claude.ai Settings → Connectors to bring the pipeline back.'},
     server_not_connected:{t:'HubSpot not connected here', b:'Add HubSpot in claude.ai Settings → Connectors, then reload this page.'},
@@ -72,40 +48,9 @@
     }).catch(function(){ feed = {state:'nomcp'}; render(); });
   }
 
-  /* ---------- Outlook ----------
-     This connector answers with one text block per message rather than a
-     single JSON array, so read result.content and parse each block. The
-     last block is a pagination summary and carries no id. */
-  function parseMail(result){
-    var rows = [];
-    var blocks = (result && result.content) || [];
-    var summary = null;
-    blocks.forEach(function(b){
-      if (!b || b.type !== 'text' || !b.text) return;
-      var o; try { o = JSON.parse(b.text); } catch(e){ return; }
-      if (o && o.id && o.receivedDateTime) rows.push(o);
-      else if (o && (o.totalResultCount != null || o.moreResults != null)) summary = o;
-    });
-    if (!rows.length && result && Array.isArray(result.payload)) rows = result.payload;
-    var human = [], vendor = [];
-    rows.forEach(function(r){
-      var addr = (r.sender || '').toLowerCase();
-      var rec = {
-        id: (r.id || r.internetMessageId || Math.random()).toString().slice(-24),
-        subject: r.subject,
-        from: addr,
-        fromName: addr.split('@')[0] + '@' + (addr.split('@')[1] || ''),
-        at: Date.parse(r.receivedDateTime) || Date.now(),
-        unread: r.isRead === false,
-        snippet: (r.summary || '').replace(/[͏​\r\n\s]+/g, ' ').trim().slice(0, 260),
-        link: r.webLink || null
-      };
-      (isVendor(addr) ? vendor : human).push(rec);
-    });
-    return {human:human, vendor:vendor,
-            total: (summary && summary.totalResultCount) || rows.length};
-  }
-
+  // Outlook connector answers with one text block per message rather than a
+  // single JSON array; parseMail (in logic.js) reads result.content and
+  // parses each block.
   function startMailFeed(){
     if (typeof claude === 'undefined' || !claude.use) { mailFeed = {state:'nomcp'}; return; }
     claude.use('mcp').then(function(mcp){

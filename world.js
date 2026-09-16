@@ -83,17 +83,6 @@
   var WORK_STALE = 7;
   var SURFACE = {chat:'Chat', code:'Claude Code', page:'Published page'};
 
-  // A business inbox is mostly robots. These patterns sort the senders that
-  // can't be replied to from the ones that can, so the panel counts people.
-  var NOISE_LOCAL = /^(no-?reply|do-?not-?reply|notifications?|notify|onboarding|newsletter|news|marketing|mailer|mailer-daemon|postmaster|dmarcreport|member|hello|updates?|connect|automated|alerts?)$/i;
-  var NOISE_DOMAIN = /(^|\.)(mkt|marketo|mailchimp|sendgrid|hubspotemail|amazonses|sparkpost|surveymonkeyuser|mcmap|bounce|notifications|mailgun|postmarkapp)\./i;
-  function isVendor(addr){
-    if (!addr) return true;
-    var at = addr.indexOf('@');
-    if (at < 0) return true;
-    var local = addr.slice(0, at), domain = addr.slice(at+1);
-    return NOISE_LOCAL.test(local) || NOISE_DOMAIN.test(domain);
-  }
   var doneMap = {};            // milestoneId -> timestamp
   var msRef = null, worksCol = null;   // the db handle is frozen; keep refs beside it
   var activeId = null, execOn = false, filterMode = 'work';
@@ -112,8 +101,6 @@
   var agentCols = {};      // districtId -> db collection ref, once resolved
   var agentStoreInit = {}; // districtId -> true once initAgentStore has run
 
-  function daysBetween(a,b){ return Math.ceil((b-a)/86400000); }
-  function daysAgo(ts){ return Math.floor((Date.now()-ts)/86400000); }
 
   /* ==================== signals ==================== */
   // A signal is one line in the panel: a live deal, or a milestone.
