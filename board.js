@@ -75,6 +75,12 @@
 
   /* ==================== persistence ==================== */
 
+  // Shared document shapes (schema v1). Not enforced anywhere — these are
+  // the fields absorb()/writeWork()/saveMilestones() read and write, written
+  // down so a future v2 knows what it's migrating from:
+  //   workstreams/<id>:  {v, name, co, status, note, link, surface, home, touched}
+  //   workspace/milestones: {v, done: {milestoneId: timestamp}, updatedAt}
+  //   agent_<distId>_messages/<id>: {v, role, text, at}   -- see agent.js
   function initDb(){
     if (typeof claude === 'undefined' || !claude.use) return;
     claude.use('db').then(function(h){
@@ -104,6 +110,7 @@
           var v = doc.data() || {};
           next.push({
             id: doc.id,
+            v: v.v || 1,
             name: v.name || doc.id,
             co: v.co || 'av',
             status: WORK_STATUS[v.status] ? v.status : 'active',
@@ -141,6 +148,7 @@
   }
 
   function writeWork(id, patch){
+    patch.v = 1;   // stamps the doc with the current schema version on every write
     var w = works.filter(function(x){ return x.id === id; })[0];
     if (w) { for (var k in patch) w[k] = patch[k]; }   // optimistic, snapshot corrects
     render(); renderWorkers();
@@ -155,7 +163,7 @@
     writeWork(id, patch);
   }
   function saveMilestones(){
-    if (msRef) msRef.set({done:doneMap, updatedAt:Date.now()}).catch(function(){});
+    if (msRef) msRef.set({v:1, done:doneMap, updatedAt:Date.now()}).catch(function(){});
   }
   function toggleMilestone(id){
     if (doneMap[id]) delete doneMap[id]; else doneMap[id] = Date.now();

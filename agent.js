@@ -32,7 +32,7 @@
     if (!col) return;
     // No pruning yet — fine for daily personal use, but an artifact database
     // caps at 5,000 documents total, so this will need rotation eventually.
-    col.add({role: role, text: text, at: Date.now()}).catch(function(){});
+    col.add({v: 1, role: role, text: text, at: Date.now()}).catch(function(){});
   }
 
   var ap = document.getElementById('ap');
