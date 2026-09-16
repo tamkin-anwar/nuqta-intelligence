@@ -9,6 +9,24 @@ in `logic.js` separately and should also pass first.
 Run this on the actual published artifact, not the GitHub Pages copy —
 the Pages copy can only ever show steps 1 and 3a, by design.
 
+## Fixed bug worth knowing about: frozen snapshot objects
+
+`toggle_milestone` used to fail every time after the first successful
+milestone write, with `"Error: Cannot add property <id>, object is not
+extensible"`. Root cause: `initDb()`'s `onSnapshot` handler did
+`doneMap = s.data().done` — a direct alias to the platform's delivered
+snapshot object. The db capability's own docs say that object is frozen
+("clone a body before editing it for a write"), so the alias read fine but
+the next attempt to add a key to it threw synchronously. `console.error`
+never caught it because `read_console_messages` only sees the outer
+claude.ai shell, not the artifact's sandboxed iframe — the only way this
+got diagnosed was asking the agent itself to quote the tool's literal error
+string back verbatim, since that message does reach it (via the thrown
+Error inside execute()). Fixed by cloning into a fresh object
+(`cloneDone()`) instead of aliasing the frozen one. Worth remembering for
+any future db.onSnapshot handler: never assign `s.data()` (or a piece of
+it) straight into a variable you intend to mutate later.
+
 ## 1. Cold load, no data yet
 - [ ] Open the artifact fresh. Loading screen shows, bar fills, world fades in.
 - [ ] No console errors (`read_console_messages`, `onlyErrors: true`).

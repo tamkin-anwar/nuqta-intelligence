@@ -81,6 +81,19 @@
   //   workstreams/<id>:  {v, name, co, status, note, link, surface, home, touched}
   //   workspace/milestones: {v, done: {milestoneId: timestamp}, updatedAt}
   //   agent_<distId>_messages/<id>: {v, role, text, at}   -- see agent.js
+  // A delivered snapshot's data() is frozen by the platform (documented:
+  // "clone a body before editing it for a write") — aliasing doneMap
+  // straight to it worked for reading, but the very next attempt to add a
+  // key to it threw "Cannot add property X, object is not extensible" and
+  // failed silently past console.error into an agent tool result. Always
+  // copy into a fresh, ordinary object instead of holding onto the frozen
+  // one directly.
+  function cloneDone(src){
+    var out = {};
+    for (var k in src) out[k] = src[k];
+    return out;
+  }
+
   function initDb(){
     if (typeof claude === 'undefined' || !claude.use) return;
     claude.use('db').then(function(h){
@@ -88,10 +101,10 @@
       db = h;
       var ref = db.doc('workspace/milestones');
       ref.get().then(function(s){
-        if (s.exists && s.data() && s.data().done){ doneMap = s.data().done; render(); }
+        if (s.exists && s.data() && s.data().done){ doneMap = cloneDone(s.data().done); render(); }
       }).catch(function(){});
       ref.onSnapshot(function(s){
-        if (s.exists && s.data() && s.data().done){ doneMap = s.data().done; render(); }
+        if (s.exists && s.data() && s.data().done){ doneMap = cloneDone(s.data().done); render(); }
       }, function(){});
       msRef = ref;
 
@@ -147,27 +160,61 @@
     render();
   }
 
+  // The db docs are explicit: "ONE WRITE AT A TIME per document... await
+  // each set/update before the next to the same document" — overlapping
+  // writes to one doc make each slower and can fail outright. An agent tool
+  // call can trigger two writes to the same document back to back (the
+  // platform runs multiple tool calls within one round concurrently), so
+  // every write here is queued per document key instead of fired directly.
+  var writeQueues = {};
+  function queueWrite(key, fn){
+    var prev = writeQueues[key] || Promise.resolve();
+    var result = prev.then(fn, fn);
+    writeQueues[key] = result.catch(function(){});   // keep the queue alive past a failed write
+    return result;
+  }
+
+  // Returns the write's promise (not fire-and-forget) so a caller — in
+  // particular an agent tool's execute() — can tell whether the change
+  // actually reached the database instead of only ever reporting the
+  // optimistic local update as success.
   function writeWork(id, patch){
     patch.v = 1;   // stamps the doc with the current schema version on every write
     var w = works.filter(function(x){ return x.id === id; })[0];
     if (w) { for (var k in patch) w[k] = patch[k]; }   // optimistic, snapshot corrects
     render(); renderWorkers();
-    if (worksCol) worksCol.doc(id).update(patch).catch(function(e){
-      workErr('write failed: ' + ((e && (e.code || e.message)) || 'unknown'));
+    if (!worksCol) return Promise.reject(new Error('board not connected'));
+    var patchCopy = {}; for (var k in patch) patchCopy[k] = patch[k];   // freeze this write's data
+    return queueWrite('work:' + id, function(){
+      return worksCol.doc(id).update(patchCopy);
+    }).catch(function(e){
+      var msg = 'write failed: ' + ((e && (e.code || e.message)) || 'unknown');
+      workErr(msg);
+      throw new Error(msg);
     });
   }
-  function touchWork(id){ writeWork(id, {touched: Date.now()}); }
+  function touchWork(id){ return writeWork(id, {touched: Date.now()}); }
   function setWorkStatus(id, st){
     var patch = {status: st};
     if (st !== 'shipped' && st !== 'parked') patch.touched = Date.now();
-    writeWork(id, patch);
+    return writeWork(id, patch);
   }
   function saveMilestones(){
-    if (msRef) msRef.set({v:1, done:doneMap, updatedAt:Date.now()}).catch(function(){});
+    if (!msRef) return Promise.reject(new Error('board not connected'));
+    var data = {v:1, done:{}, updatedAt:Date.now()};
+    for (var k in doneMap) data.done[k] = doneMap[k];   // snapshot now, not whatever doneMap is when the queued write runs
+    return queueWrite('milestones', function(){
+      return msRef.set(data);
+    }).catch(function(e){
+      var msg = 'milestone write failed: ' + ((e && (e.code || e.message)) || 'unknown');
+      workErr(msg);
+      throw new Error(msg);
+    });
   }
   function toggleMilestone(id){
     if (doneMap[id]) delete doneMap[id]; else doneMap[id] = Date.now();
-    saveMilestones(); render();
+    saveMilestones().catch(function(){});   // workErr already surfaced it; this just avoids an unhandled rejection
+    render();
   }
 
   /* ==================== rendering ==================== */
@@ -452,7 +499,7 @@
                  : /\/artifact\//.test(s.work.link) ? 'Open the page' : 'Open';
         btn(dest,'link', function(){ window.open(s.work.link,'_blank','noopener'); });
       }
-      if (s.work.status !== 'shipped') btn('Touched today','undo', function(){ touchWork(s.work.id); });
+      if (s.work.status !== 'shipped') btn('Touched today','undo', function(){ touchWork(s.work.id).catch(function(){}); });
       var sel = document.createElement('select');
       sel.className = 'wsel';
       WORK_ORDER.forEach(function(k){
@@ -461,7 +508,7 @@
         if (k === s.work.status) o.selected = true;
         sel.appendChild(o);
       });
-      sel.onchange = function(){ setWorkStatus(s.work.id, sel.value); };
+      sel.onchange = function(){ setWorkStatus(s.work.id, sel.value).catch(function(){}); };
       ft.appendChild(sel);
     } else if (s.kind === 'deal'){
       if (s.deal.url) btn('Open in HubSpot','link', function(){ window.open(s.deal.url,'_blank','noopener'); });

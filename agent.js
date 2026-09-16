@@ -93,6 +93,9 @@
     function findWork(id){
       return works.filter(function(w){ return w.id === id && w.co === distId; })[0];
     }
+    function findMilestone(id){
+      return MILESTONES.filter(function(m){ return m.id === id && m.dist === distId; })[0];
+    }
     return [
       {
         name: 'set_workstream_status',
@@ -107,8 +110,12 @@
           if (!w) throw new Error('No workstream with that id for this company.');
           var status = String(input.status||'');
           if (!WORK_STATUS[status]) throw new Error('Unknown status: ' + status);
-          setWorkStatus(w.id, status);
-          return {id: w.id, name: w.name, status: status};
+          // setWorkStatus returns the actual db write's promise — awaiting it
+          // (rather than treating the call as fire-and-forget) is what lets a
+          // real backend failure reach Claude as an error instead of a false "Done".
+          return setWorkStatus(w.id, status).then(function(){
+            return {id: w.id, name: w.name, status: status};
+          });
         }
       },
       {
@@ -120,8 +127,68 @@
         execute: function(input){
           var w = findWork(String(input.workId||''));
           if (!w) throw new Error('No workstream with that id for this company.');
-          touchWork(w.id);
-          return {id: w.id, name: w.name, touched: 'today'};
+          return touchWork(w.id).then(function(){
+            return {id: w.id, name: w.name, touched: 'today'};
+          });
+        }
+      },
+      {
+        name: 'create_workstream',
+        description: 'Add a new workstream to this company\'s board. Use when the user ' +
+          'describes work that isn\'t tracked yet. Starts as "active" and touched now.',
+        inputSchema: {type:'object', properties:{
+          name: {type:'string', description:'Short title for the workstream.'},
+          note: {type:'string', description:'Optional one-line context for why it\'s here.'},
+          link: {type:'string', description:'Optional URL to the actual conversation or page.'},
+          surface: {type:'string', enum:['chat','code','page'], description:'Where the work happens. Defaults to chat.'}
+        }, required:['name']},
+        execute: function(input){
+          if (!worksCol) throw new Error('The board isn\'t connected right now — try again in a moment.');
+          var name = String(input.name||'').trim();
+          if (!name) throw new Error('A workstream needs a name.');
+          var surface = ['chat','code','page'].indexOf(input.surface) >= 0 ? input.surface : 'chat';
+          var data = {
+            v: 1, name: name, co: distId, status: 'active',
+            note: String(input.note||''), link: String(input.link||''),
+            surface: surface, home: '', touched: Date.now()
+          };
+          return worksCol.add(data).then(function(ref){
+            return {id: ref.id, name: name, status: 'active'};
+          });
+        }
+      },
+      {
+        name: 'set_workstream_note',
+        description: 'Update a workstream\'s note — why it\'s blocked, what\'s next, standing context.',
+        inputSchema: {type:'object', properties:{
+          workId: {type:'string', description:'The workstream id, as listed in the board context.'},
+          note: {type:'string', description:'The new note text, replacing whatever was there.'}
+        }, required:['workId','note']},
+        execute: function(input){
+          var w = findWork(String(input.workId||''));
+          if (!w) throw new Error('No workstream with that id for this company.');
+          var note = String(input.note||'');
+          return writeWork(w.id, {note: note}).then(function(){
+            return {id: w.id, name: w.name, note: note};
+          });
+        }
+      },
+      {
+        name: 'toggle_milestone',
+        description: 'Mark one of this company\'s standing milestones done or not done.',
+        inputSchema: {type:'object', properties:{
+          milestoneId: {type:'string', description:'The milestone id, as listed in the board context.'},
+          done: {type:'boolean'}
+        }, required:['milestoneId','done']},
+        execute: function(input){
+          var m = findMilestone(String(input.milestoneId||''));
+          if (!m) throw new Error('No milestone with that id for this company.');
+          var done = !!input.done;
+          if (done) doneMap[m.id] = Date.now(); else delete doneMap[m.id];
+          render();
+          return saveMilestones().then(function(){
+            return {id: m.id, title: m.title, done: done};
+          });
         }
       }
     ];
@@ -143,14 +210,19 @@
     // the way the conversation actually happened, so the context rides
     // along with the real message instead of breaking that alternation.
     // Ids are included (not just names) so the model can address a specific
-    // workstream when it calls a tool.
-    var contextLines = works.filter(function(w){ return w.co === distId; })
+    // workstream or milestone when it calls a tool.
+    var workLines = works.filter(function(w){ return w.co === distId; })
       .map(function(w){ return '- ' + w.id + ': ' + w.name + ' (' + ((WORK_STATUS[w.status]||{}).label||w.status) + ')'; });
+    var msLines = MILESTONES.filter(function(m){ return m.dist === distId; })
+      .map(function(m){ return '- ' + m.id + ': ' + m.title + ' (' + (doneMap[m.id] ? 'done' : 'open') + ')'; });
     var context = 'You are the assistant embedded in the Nuqta Intelligence dashboard for ' +
       d.name + '. Current open workstreams for this company (id: name (status)):\n' +
-      (contextLines.length ? contextLines.join('\n') : '(none tracked)') +
-      '\n\nYou can change a workstream\'s status or mark it touched using the tools ' +
-      'provided, or just answer directly. Be concise.\n\n';
+      (workLines.length ? workLines.join('\n') : '(none tracked)') +
+      '\n\nStanding milestones for this company (id: title (done/open)):\n' +
+      (msLines.length ? msLines.join('\n') : '(none tracked)') +
+      '\n\nYou can create a workstream, change its status, touch it, or update its ' +
+      'note, and toggle a milestone, using the tools provided — or just answer ' +
+      'directly. Be concise.\n\n';
 
     var turns = list.filter(function(m){ return !m.pending; }).map(function(m, i, arr){
       var isLastUser = (m.role === 'user' && i === arr.length - 1);
